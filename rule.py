@@ -17,23 +17,23 @@ class GraphRule:
         self.id2e = self.data.id2e
         self.id2r = self.data.id2r
         self.nx = self.data.nx
-
         self.mat1 = [x.clone().to(self.device).to_dense().to_sparse() for x in self.data.rel_mat]
         self.mat2 = []
 
         self.rule_set = {}
-
+        print("抽取规则中...")
         start_time = time.time()
         while time.time()-start_time<60 and self.sampleRules():
             pass
-
         for rule in list(self.rule_set.keys()):
             self.rule_set[tuple([self.negRel(x) for x in rule[:-1][::-1]] + [self.negRel(rule[-1])])] = -1
-
+        print("规则抽取完成")
         self.addPath = 1
         self.allAddPath = 0
-
         self.bar_format = '{desc}{percentage:3.0f}-{total_fmt}|{bar}|[{elapsed}<{remaining}{postfix}]'
+
+    def __del__(self):
+        pass
 
     @staticmethod
     def negRel(rel):
@@ -67,21 +67,20 @@ class GraphRule:
                         if head & 1:
                             rule = tuple([self.negRel(x) for x in rule[::-1]] + [self.negRel(head)])
                         else:
-                            rule = tuple(rule + [head])
+                            rule = tuple(rule + [head]) 
                         if rule not in self.rule_set:
                             self.rule_set[rule] = -1
                             cnt += 1
                         break
+        print(f'新抽取到{cnt}条规则')
         return cnt > 5
 
     def ifChange(self):
-
         if self.allAddPath:
             self.mat1 = self.mat2
         return self.addPath > 0
 
     def qCalConf(self, mat, rule_set):
-
         allCon = []
 
         calcCache = [[None] for _ in range(self.rule_len)]
@@ -90,10 +89,10 @@ class GraphRule:
         self.calPath_08 = defaultdict(list)
         self.calPath_07 = defaultdict(list)
         self.calPath_06 = defaultdict(list)
-
-        for rule in tqdm(rule_set, ncols=60, bar_format=self.bar_format):
+        for rule in tqdm(rule_set, desc="计算置信度", ncols=60, bar_format=self.bar_format):
             if 0 == rule_set[rule]:
                 continue
+
             result = mat[rule[0]].coalesce()
             for i in range(1, len(rule)-1):
                 if calcCache[i][0] == rule[:i+1]:
@@ -112,7 +111,6 @@ class GraphRule:
                 rule_set[rule] = conf
                 if 1 <= rule_set[rule]:
                     continue
-
                 if rule_set[rule] > 0.9:
                     self.calPath_09[rule[-1]].append((rule, result.bool().float()))
                 if rule_set[rule] > 0.8:
@@ -126,20 +124,21 @@ class GraphRule:
                 allCon.append(0)
         allCon = sorted(allCon, key=lambda x:-x)
         length = len(allCon)
+        print(f'平均置信度:{sum(allCon)/length}    前10%:{sum(allCon[:length//10])/(length//10)}    ' + 
+              f'前30%:{sum(allCon[:3*length//10])/(3*length//10)}    前50%:{sum(allCon[:5*length//10])/(5*length//10)}')
         return rule_set
 
     def updateMaxMat_bak(self, mat, rule_set):
         ori_cnt = sum([x.values().bool().sum() for x in mat]).item()
         mat2 = [x.clone() for x in mat]
         cnt_all = 0
-        for headRule, results in tqdm(rule_set.items(), ncols=60, bar_format=self.bar_format):
-
+        for headRule, results in tqdm(rule_set.items(), desc="更新矩阵", ncols=60, bar_format=self.bar_format):
             results = sorted(results, key=lambda x: -self.rule_set[x[0]])
             for rule, result in results:
-
                 tmp = (result - result * mat2[headRule].bool().float()).coalesce()
                 mat2[headRule] = (mat2[headRule] + self.rule_set[rule] * tmp).to_dense().to_sparse().coalesce()
                 cnt_all += int(sum(tmp.values()))
+        print(f'原有{ori_cnt}条边, 补充{cnt_all}条, 补充{100*cnt_all/ori_cnt:.2f}%')
         return mat2, cnt_all
 
     def updateMaxMat(self, mat, rule_set0):
@@ -147,14 +146,13 @@ class GraphRule:
         mat2 = [x.clone() for x in mat]
         cnt_all = 0
         for i, rule_set in enumerate([self.calPath_09, self.calPath_08, self.calPath_07, self.calPath_06]):
-            for headRule, results in tqdm(rule_set.items(), ncols=60, bar_format=self.bar_format):
-
+            for headRule, results in tqdm(rule_set.items(), desc=f"更新矩阵_{0.9-i/10:.2f} ", ncols=60, bar_format=self.bar_format):
                 results = sorted(results, key=lambda x: -self.rule_set[x[0]])
                 for rule, result in results:
-
                     tmp = (result - result * mat2[headRule].bool().float()).coalesce()
                     mat2[headRule] = (mat2[headRule] + self.rule_set[rule] * tmp).to_dense().to_sparse().coalesce()
                     cnt_all += int(sum(tmp.values()))
+            print(f'置信度 {0.9-i/10:.2f}, 原有{ori_cnt}条边, 补充{cnt_all}条, 补充{100*cnt_all/ori_cnt:.2f}%')
             with open(f'data/FB15k-237-betae/RuleAddedMat_{0.9-i/10:.2f}.pkl', 'wb') as data:
                 pickle.dump(mat, data)
         return mat2, cnt_all
@@ -163,4 +161,4 @@ class GraphRule:
         self.rule_set = self.qCalConf(self.mat1, self.rule_set)
         self.mat2, self.addPath = self.updateMaxMat(self.mat1, self.calPath)
         self.allAddPath += self.addPath
-
+        print(f"补全连接数:{self.addPath}")

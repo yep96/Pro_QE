@@ -1,18 +1,26 @@
-#!/usr/bin/python3
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
+
 import argparse
 import json
 import logging
 import os
+import random
 from neighborGraph import neighborGraph
 
 import numpy as np
+from sklearn.metrics import log_loss
 import torch
 from torch.utils.data import DataLoader
+from torch.utils.data import SubsetRandomSampler
 from models import KGReasoning
 from dataloader import TestDataset, TrainDataset, SingledirectionalOneShotIterator
 from tensorboardX import SummaryWriter
+import time
 import pickle
 from collections import defaultdict
+from tqdm import tqdm
 from util import flatten_query, list2tuple, parse_time, set_global_seed, eval_tuple
 
 from rule import GraphRule
@@ -20,7 +28,7 @@ from ruledata import Data
 
 ours = 'ns'
 
-query_name_dict = {('e',('r',)): '1p',
+query_name_dict = {('e',('r',)): '1p', 
                     ('e', ('r', 'r')): '2p',
                     ('e', ('r', 'r', 'r')): '3p',
                     (('e', ('r',)), ('e', ('r',))): '2i',
@@ -38,7 +46,7 @@ query_name_dict = {('e',('r',)): '1p',
                     ((('e', ('r', 'n')), ('e', ('r', 'n'))), ('n', 'r')): 'up-DM'
                 }
 name_query_dict = {value: key for key, value in query_name_dict.items()}
-all_tasks = list(name_query_dict.keys()) # ['1p', '2p', '3p', '2i', '3i', 'ip', 'pi', '2in', '3in', 'inp', 'pin', 'pni', '2u-DNF', '2u-DM', 'up-DNF', 'up-DM']
+all_tasks = list(name_query_dict.keys())
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser(
@@ -46,35 +54,35 @@ def parse_args(args=None):
         usage='train.py [<args>] [-h | --help]'
     )
 
-    parser.add_argument('--cuda', action='store_true', help='use GPU')
+    parser.add_argument('--cuda', default=True, action='store_true', help='use GPU')
 
     parser.add_argument('--do_train', action='store_true', help="do train")
     parser.add_argument('--do_valid', action='store_true', help="do valid")
     parser.add_argument('--do_test', action='store_true', help="do test")
 
     parser.add_argument('--data_path', type=str, default=None, help="KG data path")
-    parser.add_argument('-n', '--negative_sample_size', default=128, type=int, help="negative entities sampled per query")
-    parser.add_argument('-d', '--hidden_dim', default=500, type=int, help="embedding dimension")
-    parser.add_argument('-g', '--gamma', default=12.0, type=float, help="margin in the loss")
-    parser.add_argument('-b', '--batch_size', default=1024, type=int, help="batch size of queries")
+    parser.add_argument('-n', '--negative_sample_size', default=16, type=int, help="negative entities sampled per query")
+    parser.add_argument('-d', '--hidden_dim', default=512, type=int, help="embedding dimension")
+    parser.add_argument('-g', '--gamma', default=24.0, type=float, help="margin in the loss")
+    parser.add_argument('-b', '--batch_size', default=32, type=int, help="batch size of queries")
     parser.add_argument('--test_batch_size', default=1, type=int, help='valid/test batch size')
     parser.add_argument('-lr', '--learning_rate', default=0.0001, type=float)
     parser.add_argument('-cpu', '--cpu_num', default=10, type=int, help="used to speed up torch.dataloader")
     parser.add_argument('-save', '--save_path', default=None, type=str, help="no need to set manually, will configure automatically")
-    parser.add_argument('--max_steps', default=1000000, type=int, help="maximum iterations to train")
+    parser.add_argument('--max_steps', default=200000, type=int, help="maximum steps to train")
     parser.add_argument('--warm_up_steps', default=None, type=int, help="no need to set manually, will configure automatically")
-
-    parser.add_argument('--save_checkpoint_steps', default=1000, type=int, help="save checkpoints every xx steps")
-    parser.add_argument('--valid_steps', default=10000, type=int, help="evaluate validation queries every xx steps")
-    parser.add_argument('--log_steps', default=100, type=int, help='train log every xx steps')
+    
+    parser.add_argument('--save_checkpoint_steps', default=10000, type=int, help="save checkpoints every xx steps")
+    parser.add_argument('--valid_steps', default=100001, type=int, help="evaluate validation queries every xx steps")
+    parser.add_argument('--log_steps', default=1000, type=int, help='train log every xx steps')
     parser.add_argument('--test_log_steps', default=10000, type=int, help='valid/test log every xx steps')
-
+    
     parser.add_argument('--nentity', type=int, default=0, help='DO NOT MANUALLY SET')
     parser.add_argument('--nrelation', type=int, default=0, help='DO NOT MANUALLY SET')
-
-    parser.add_argument('--geo', default='vec', type=str, choices=['vec', 'box', 'beta', 'ns'], help='the reasoning model, vec for GQE, box for Query2box, beta for BetaE, ns for neural-symbolic')
+    
+    parser.add_argument('--geo', default='vec', type=str, choices=['vec', 'box', 'beta', 'ns', 'cone'], help='the reasoning model, vec for GQE, box for Query2box, beta for BetaE, ns for neural-symbolic')
     parser.add_argument('--print_on_screen', action='store_true')
-
+    
     parser.add_argument('--tasks', default='1p.2p.3p.2i.3i.ip.pi.2in.3in.inp.pin.pni.2u.up', type=str, help="tasks connected by dot, refer to the BetaE paper for detailed meaning and structure of each task")
     parser.add_argument('--seed', default=0, type=int, help="random seed")
     parser.add_argument('-betam', '--beta_mode', default="(1600,2)", type=str, help='(hidden_dim,num_layer) for BetaE relational projection')
@@ -87,9 +95,6 @@ def parse_args(args=None):
     parser.add_argument('-evu', '--evaluate_union', default="DNF", type=str, choices=['DNF', 'DM'], help='the way to evaluate union queries, transform it to disjunctive normal form (DNF) or use the De Morgan\'s laws (DM)')
     parser.add_argument('-newloss', '--new_loss', action='store_true', help="use the v2b loss")
 
-    parser.add_argument('-use_rule', action='store_true')
-    parser.add_argument('-rule_len', type=int, required=False, help='the max length of rule')
-    parser.add_argument('-rule_thr', type=float, required=False, help='the threhold of rule confidence')
 
     parser.add_argument('-pre_1p', default=False, action='store_true', help="pretrain 1p tasks")
     parser.add_argument('-gridsearch', default=False, action='store_true', help="find hyper parameter to use vec&emb")
@@ -99,6 +104,12 @@ def parse_args(args=None):
     parser.add_argument('-ee', '--ee', action='store_true', help='inductive type includes ee')
     parser.add_argument('-es', '--es', action='store_true', help='inductive type includes es')
     parser.add_argument('-se', '--se', action='store_true', help='inductive type includes se')
+
+
+    parser.add_argument('-cenr', '--center_reg', default=0.02, type=float,
+                        help='center_reg for ConE, center_reg balances the in_cone dist and out_cone dist')
+    parser.add_argument('--drop', type=float, default=0., help='dropout rate')
+
 
     return parser.parse_args(args)
 
@@ -164,7 +175,7 @@ def evaluate(model, easy_answers, answers, args, dataloader, query_name_dict, mo
     log_metrics('%s average'%mode, step, average_metrics)
 
     return all_metrics
-
+        
 def load_data(args, tasks):
     logging.info("loading data")
     train_queries = pickle.load(open(os.path.join(args.data_path, "train-queries.pkl"), 'rb'))
@@ -200,14 +211,15 @@ def load_data(args, tasks):
             query_structure = name_query_dict[name if 'u' not in name else '-'.join([name, evaluate_union])]
             if query_structure in train_queries:
                 del train_queries[query_structure]
-
+            
             if query_structure in valid_ee_queries:
                 del valid_ee_queries[query_structure]
             if query_structure in valid_es_queries:
                 del valid_es_queries[query_structure]
             if query_structure in valid_se_queries:
                 del valid_se_queries[query_structure]
-
+            
+            
             if query_structure in test_ee_queries:
                 del test_ee_queries[query_structure]
             if query_structure in test_es_queries:
@@ -226,28 +238,15 @@ def main(args):
     mat = None
 
     if args.geo == 'ns':
-        if args.use_rule:
-            matpath = os.path.join(args.data_path, 'RuleAddedMat.pkl')
-            if os.path.exists(matpath):
-                with open(matpath, 'rb') as f:
-                    mat = pickle.load(f)
-            else:
-                base_data = Data(args.data_path)
-                mat = base_data.rel_mat
-                rule_model = GraphRule(args.rule_len, args.rule_thr, base_data)
-                _ = rule_model.qCalConf(rule_model.mat1, rule_model.rule_set)
-                mat, _ = rule_model.updateMaxMat(rule_model.mat1, rule_model.calPath)
-                exit()
-        else:
-            base_data = Data(args.data_path)
-            mat = base_data.rel_mat
+        base_data = Data(args.data_path)
+        mat = base_data.rel_mat
 
 
     tasks = args.tasks.split('.')
     for task in tasks:
         if 'n' in task and args.geo in ['box', 'vec']:
             assert False, "Q2B and GQE cannot handle queries with negation"
-
+    
     if args.lambdas:
         lams = [float(x) for x in args.lambdas.split(';')]
         assert(len(lams) == len(tasks))
@@ -272,6 +271,8 @@ def main(args):
         tmp_str = "g-{}-mode-{}".format(args.gamma, args.beta_mode)
     elif args.geo == 'ns':
         tmp_str = "g-{}-mode-{}".format(args.gamma, args.kge_mode)
+    elif args.geo == 'cone':
+        tmp_str = "g-{}-mode-{}".format(args.gamma, args.center_reg)
 
     if args.checkpoint_path is not None:
         args.save_path = args.checkpoint_path
@@ -292,10 +293,10 @@ def main(args):
         entrel = f.readlines()
         nentity = int(entrel[0].split(' ')[-1])
         nrelation = int(entrel[1].split(' ')[-1])
-
+    
     args.nentity = nentity
     args.nrelation = nrelation
-
+    
     logging.info('-------------------------------'*3)
     logging.info('Geo: %s' % args.geo)
     logging.info('Data Path: %s' % args.data_path)
@@ -322,7 +323,12 @@ def main(args):
                 train_other_queries[query_structure] = train_queries[query_structure]
         train_path_queries = flatten_query(train_path_queries)
         train_path_iterator = SingledirectionalOneShotIterator(DataLoader(
-                                    TrainDataset(train_path_queries, nentity, nrelation, args.negative_sample_size, train_answers),
+                                    TrainDataset(args.data_path, 
+                                                 train_path_queries, 
+                                                 nentity, 
+                                                 nrelation, 
+                                                 args.negative_sample_size, 
+                                                 train_answers),
                                     batch_size=args.batch_size,
                                     shuffle=True,
                                     num_workers=args.cpu_num,
@@ -331,7 +337,7 @@ def main(args):
         if len(train_other_queries) > 0:
             train_other_queries = flatten_query(train_other_queries)
             train_other_iterator = SingledirectionalOneShotIterator(DataLoader(
-                                        TrainDataset(train_other_queries, nentity, nrelation, args.negative_sample_size, train_answers),
+                                        TrainDataset(args.data_path, train_other_queries, nentity, nrelation, args.negative_sample_size, train_answers),
                                         batch_size=args.batch_size,
                                         shuffle=True,
                                         num_workers=args.cpu_num,
@@ -339,7 +345,7 @@ def main(args):
                                     ))
         else:
             train_other_iterator = None
-
+    
     logging.info("Validation info:")
     if args.do_valid:
         if args.ee:
@@ -348,12 +354,12 @@ def main(args):
             valid_ee_queries = flatten_query(valid_ee_queries)
             valid_ee_dataloader = DataLoader(
                 TestDataset(
-                    valid_ee_queries,
-                    args.nentity,
-                    args.nrelation,
-                ),
+                    valid_ee_queries, 
+                    args.nentity, 
+                    args.nrelation, 
+                ), 
                 batch_size=args.test_batch_size,
-                num_workers=args.cpu_num,
+                num_workers=args.cpu_num, 
                 collate_fn=TestDataset.collate_fn
             )
         if args.es:
@@ -362,12 +368,12 @@ def main(args):
             valid_es_queries = flatten_query(valid_es_queries)
             valid_es_dataloader = DataLoader(
                 TestDataset(
-                    valid_es_queries,
-                    args.nentity,
-                    args.nrelation,
-                ),
+                    valid_es_queries, 
+                    args.nentity, 
+                    args.nrelation, 
+                ), 
                 batch_size=args.test_batch_size,
-                num_workers=args.cpu_num,
+                num_workers=args.cpu_num, 
                 collate_fn=TestDataset.collate_fn
             )
         if args.se:
@@ -376,12 +382,12 @@ def main(args):
             valid_se_queries = flatten_query(valid_se_queries)
             valid_se_dataloader = DataLoader(
                 TestDataset(
-                    valid_se_queries,
-                    args.nentity,
-                    args.nrelation,
-                ),
+                    valid_se_queries, 
+                    args.nentity, 
+                    args.nrelation, 
+                ), 
                 batch_size=args.test_batch_size,
-                num_workers=args.cpu_num,
+                num_workers=args.cpu_num, 
                 collate_fn=TestDataset.collate_fn
             )
 
@@ -393,12 +399,12 @@ def main(args):
             test_ee_queries = flatten_query(test_ee_queries)
             test_ee_dataloader = DataLoader(
                 TestDataset(
-                    test_ee_queries,
-                    args.nentity,
-                    args.nrelation,
-                ),
+                    test_ee_queries, 
+                    args.nentity, 
+                    args.nrelation, 
+                ), 
                 batch_size=args.test_batch_size,
-                num_workers=args.cpu_num,
+                num_workers=args.cpu_num, 
                 collate_fn=TestDataset.collate_fn
             )
         if args.es:
@@ -407,12 +413,12 @@ def main(args):
             test_es_queries = flatten_query(test_es_queries)
             test_es_dataloader = DataLoader(
                 TestDataset(
-                    test_es_queries,
-                    args.nentity,
-                    args.nrelation,
-                ),
+                    test_es_queries, 
+                    args.nentity, 
+                    args.nrelation, 
+                ), 
                 batch_size=args.test_batch_size,
-                num_workers=args.cpu_num,
+                num_workers=args.cpu_num, 
                 collate_fn=TestDataset.collate_fn
             )
         if args.se:
@@ -421,12 +427,12 @@ def main(args):
             test_se_queries = flatten_query(test_se_queries)
             test_se_dataloader = DataLoader(
                 TestDataset(
-                    test_se_queries,
-                    args.nentity,
-                    args.nrelation,
-                ),
+                    test_se_queries, 
+                    args.nentity, 
+                    args.nrelation, 
+                ), 
                 batch_size=args.test_batch_size,
-                num_workers=args.cpu_num,
+                num_workers=args.cpu_num, 
                 collate_fn=TestDataset.collate_fn
             )
 
@@ -464,7 +470,7 @@ def main(args):
     if args.cuda:
         model = model.cuda()
 
-
+    
     if args.KGE_pretrain:
         pre = torch.load(os.path.join(args.data_path, 'KGEmodel', args.kge_mode+'.ckpt'))
         pretrained_dict = { 'embedding_range':pre['state_dict']['model.embedding_range'], \
@@ -476,7 +482,7 @@ def main(args):
     if args.do_train:
         current_learning_rate = args.learning_rate
         optimizer = torch.optim.Adam(
-            filter(lambda p: p.requires_grad, model.parameters()),
+            filter(lambda p: p.requires_grad, model.parameters()), 
             lr=current_learning_rate
         )
         warm_up_steps = args.max_steps // 2
@@ -496,7 +502,7 @@ def main(args):
         logging.info('Ramdomly Initializing %s Model...' % args.geo)
         init_step = 0
 
-    step = init_step
+    step = init_step 
     if args.geo == 'box':
         logging.info('box mode = %s' % args.box_mode)
     elif args.geo == 'beta':
@@ -512,37 +518,52 @@ def main(args):
     logging.info('batch_size = %d' % args.batch_size)
     logging.info('hidden_dim = %d' % args.hidden_dim)
     logging.info('gamma = %f' % args.gamma)
+    
+    if args.ee:
+        indices = random.sample(list(range(10000)), 200)
+        sampler = SubsetRandomSampler(indices)
+        test_ee_dataloader_carry = DataLoader(
+                TestDataset(
+                    test_ee_queries, 
+                    args.nentity, 
+                    args.nrelation, 
+                ), 
+                batch_size=args.test_batch_size,
+                sampler=sampler,
+                num_workers=args.cpu_num, 
+                collate_fn=TestDataset.collate_fn
+        )
+    evaluate(model, test_ee_easy_answers, test_ee_answers, args, test_ee_dataloader_carry, query_name_dict, 'Test_ee', step, writer)
+
 
     if args.do_train:
         training_logs = []
         for step in range(init_step, args.max_steps):
-            if step == 2*args.max_steps//3:
-                args.valid_steps *= 4
-
+            
             with torch.autograd.set_detect_anomaly(True):
-                log = model.train_step(model, optimizer, train_path_iterator, args, step)
+                log = model.train_step(model, optimizer, train_path_iterator, args)
             for metric in log:
                 writer.add_scalar('path_'+metric, log[metric], step)
             if train_other_iterator is not None:
-                log = model.train_step(model, optimizer, train_other_iterator, args, step)
+                log = model.train_step(model, optimizer, train_other_iterator, args)
                 for metric in log:
                     writer.add_scalar('other_'+metric, log[metric], step)
-                log = model.train_step(model, optimizer, train_path_iterator, args, step)
+                log = model.train_step(model, optimizer, train_path_iterator, args)
 
             training_logs.append(log)
-
+            
             if step >= warm_up_steps:
                 current_learning_rate = current_learning_rate / 5
                 logging.info('Change learning_rate to %.10f at step %d' % (current_learning_rate, step))
                 optimizer = torch.optim.Adam(
-                    filter(lambda p: p.requires_grad, model.parameters()),
+                    filter(lambda p: p.requires_grad, model.parameters()), 
                     lr=current_learning_rate
                 )
                 warm_up_steps = args.max_steps
-
+            
             if step % args.save_checkpoint_steps == 0:
                 save_variable_list = {
-                    'step': step,
+                    'step': step, 
                     'current_learning_rate': current_learning_rate,
                     'warm_up_steps': warm_up_steps
                 }
@@ -562,11 +583,7 @@ def main(args):
                     logging.info('Evaluating on Test Dataset...')
                     if args.ee:
                         test_ee_metrics = evaluate(model, test_ee_easy_answers, test_ee_answers, args, test_ee_dataloader, query_name_dict, 'Test_ee', step, writer)
-                    if args.es:
-                        test_es_metrics = evaluate(model, test_es_easy_answers, test_es_answers, args, test_es_dataloader, query_name_dict, 'Test_es', step, writer)
-                    if args.se:
-                        test_se_metrics = evaluate(model, test_se_easy_answers, test_se_answers, args, test_se_dataloader, query_name_dict, 'Test_se', step, writer)
-
+                
             if step % args.log_steps == 0:
                 metrics = {}
                 for metric in training_logs[0].keys():
@@ -576,12 +593,12 @@ def main(args):
                 training_logs = []
 
         save_variable_list = {
-            'step': step,
+            'step': step, 
             'current_learning_rate': current_learning_rate,
             'warm_up_steps': warm_up_steps
         }
         save_model(model, optimizer, save_variable_list, args, step)
-
+        
     try:
         print (step)
     except:

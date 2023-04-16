@@ -1,6 +1,10 @@
-#!/usr/bin/python3
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
+
 import numpy as np
 import torch
+import os
 
 from torch.utils.data import Dataset
 from util import list2tuple, tuple2list, flatten
@@ -14,13 +18,13 @@ class TestDataset(Dataset):
 
     def __len__(self):
         return self.len
-
+    
     def __getitem__(self, idx):
         query = self.queries[idx][0]
         query_structure = self.queries[idx][1]
         negative_sample = torch.LongTensor(range(self.nentity))
         return negative_sample, flatten(query), query, query_structure
-
+    
     @staticmethod
     def collate_fn(data):
         negative_sample = torch.stack([_[0] for _ in data], dim=0)
@@ -28,9 +32,9 @@ class TestDataset(Dataset):
         query_unflatten = [_[2] for _ in data]
         query_structure = [_[3] for _ in data]
         return negative_sample, query, query_unflatten, query_structure
-
+    
 class TrainDataset(Dataset):
-    def __init__(self, queries, nentity, nrelation, negative_sample_size, answer):
+    def __init__(self, path, queries, nentity, nrelation, negative_sample_size, answer):
         self.len = len(queries)
         self.queries = queries
         self.nentity = nentity
@@ -38,24 +42,38 @@ class TrainDataset(Dataset):
         self.negative_sample_size = negative_sample_size
         self.count = self.count_frequency(queries, answer)
         self.answer = answer
+        
+        self.emerge_entity = []
+        with open(os.path.join(path, "entities_emerge.txt")) as f:
+            for i, line in enumerate(f):
+                entity = line.strip()
+                self.emerge_entity.append(entity)
+        f.close()
 
     def __len__(self):
         return self.len
-
+    
     def __getitem__(self, idx):
         query = self.queries[idx][0]
         query_structure = self.queries[idx][1]
         tail = np.random.choice(list(self.answer[query]))
-        subsampling_weight = self.count[query]
+        subsampling_weight = self.count[query] 
         subsampling_weight = torch.sqrt(1 / torch.Tensor([subsampling_weight]))
         negative_sample_list = []
         negative_sample_size = 0
         while negative_sample_size < self.negative_sample_size:
             negative_sample = np.random.randint(self.nentity, size=self.negative_sample_size*2)
             mask = np.in1d(
-                negative_sample,
-                self.answer[query],
-                assume_unique=True,
+                negative_sample, 
+                self.answer[query], 
+                assume_unique=True, 
+                invert=True
+            )
+            negative_sample = negative_sample[mask]
+            mask = np.in1d(
+                negative_sample, 
+                self.emerge_entity, 
+                assume_unique=True, 
                 invert=True
             )
             negative_sample = negative_sample[mask]
@@ -66,7 +84,7 @@ class TrainDataset(Dataset):
         positive_sample = torch.LongTensor([tail])
         return positive_sample, negative_sample, subsampling_weight, flatten(query), query_structure
 
-
+    
     @staticmethod
     def collate_fn(data):
         positive_sample = torch.cat([_[0] for _ in data], dim=0)
@@ -75,7 +93,7 @@ class TrainDataset(Dataset):
         query = [_[3] for _ in data]
         query_structure = [_[4] for _ in data]
         return positive_sample, negative_sample, subsample_weight, query, query_structure
-
+    
     @staticmethod
     def count_frequency(queries, answer, start=4):
         count = {}
@@ -87,12 +105,12 @@ class SingledirectionalOneShotIterator(object):
     def __init__(self, dataloader):
         self.iterator = self.one_shot_iterator(dataloader)
         self.step = 0
-
+        
     def __next__(self):
         self.step += 1
         data = next(self.iterator)
         return data
-
+    
     @staticmethod
     def one_shot_iterator(dataloader):
         while True:

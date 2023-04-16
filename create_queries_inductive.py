@@ -1,6 +1,5 @@
 import pickle
 import os.path as osp
-from secrets import choice
 import numpy as np
 import click
 from collections import defaultdict
@@ -10,6 +9,7 @@ import time
 import pdb
 import logging
 import os
+
 
 def set_logger(save_path, query_name, print_on_screen=False):
     log_file = os.path.join(save_path, '%s.log'%(query_name))
@@ -44,7 +44,7 @@ def index_dataset(dataset_name, emerge_ratio, force=False):
             break
     if return_flag and not force:
         print ("index file exists")
-        return
+        return  
 
     ent2id, rel2id, id2rel, id2ent = {}, {}, {}, {}
 
@@ -110,14 +110,14 @@ def index_dataset(dataset_name, emerge_ratio, force=False):
     print ("indexing finished!!")
 
     inductive_split(dataset_name, len(ent2id), emerge_ratio)
-
+    
 def inductive_split(dataset, ent_num, emerge_ratio):
     print('Split inductive dataset {0}'.format(dataset))
     base_path = 'data/{0}/'.format(dataset)
-
+    
     ent_train = random.sample(range(ent_num), int(ent_num*emerge_ratio))
     ent_emerge = list(set(list(range(ent_num))) - set(ent_train))
-
+    
     fw_ent_train = open(osp.join(base_path, 'entities_train.txt'), "w")
     for ent in ent_train:
         fw_ent_train.write(str(ent) + '\n')
@@ -181,7 +181,7 @@ def write_links(dataset, ent_out, max_ans_num, name, induc_type, emerge_entity):
             if len(ent_out[ent][rel]) <= max_ans_num:
                 if judge_emerge_type(['e', ['r']], (ent, (rel,)), ent_out[ent][rel], emerge_entity) != induc_type:
                     continue
-
+                
                 queries[('e', ('r',))].add((ent, (rel,)))
                 if induc_type == 'se':
                     answers[(ent, (rel,))] = ent_out[ent][rel] & emerge_entity
@@ -199,7 +199,7 @@ def write_links(dataset, ent_out, max_ans_num, name, induc_type, emerge_entity):
         pickle.dump(answers, f)
     with open('./data/%s/query/%s-easy-answers.pkl'%(dataset, name), 'wb') as f:
         pickle.dump(answers_easy, f)
-
+    
     print ('num_more_answer', num_more_answer, 'cnt_queries', cnt_queries)
 
 def ground_queries(dataset, query_structure, ent_in, ent_out, small_ent_in, small_ent_out, gen_num, max_ans_num, query_name, mode, ent2id, rel2id, induc_type, emerge_entity):
@@ -214,14 +214,14 @@ def ground_queries(dataset, query_structure, ent_in, ent_out, small_ent_in, smal
     while num_sampled < gen_num:
         if num_sampled != 0:
             if num_sampled % (gen_num//100) == 0 and num_sampled != old_num_sampled:
-                logging.info('%s %s: [%d/%d], avg time: %s, try: %s, repeat: %s: more_answer: %s, broken: %s, no extra: %s, no negative: %s empty: %s wrong type: %s'%(mode,
-                    query_structure,
-                    num_sampled, gen_num, (time.time()-s0)/num_sampled, num_try, num_repeat, num_more_answer,
+                logging.info('%s %s: [%d/%d], avg time: %s, try: %s, repeat: %s: more_answer: %s, broken: %s, no extra: %s, no negative: %s empty: %s wrong type: %s'%(mode, 
+                    query_structure, 
+                    num_sampled, gen_num, (time.time()-s0)/num_sampled, num_try, num_repeat, num_more_answer, 
                     num_broken, num_no_extra_answer, num_no_extra_negative, num_empty, num_wrong_type))
                 old_num_sampled = num_sampled
-        print ('%s %s: [%d/%d], avg time: %s, try: %s, repeat: %s: more_answer: %s, broken: %s, no extra: %s, no negative: %s empty: %s wrong type: %s'%(mode,
-            query_structure,
-            num_sampled, gen_num, (time.time()-s0)/(num_sampled+0.001), num_try, num_repeat, num_more_answer,
+        print ('%s %s: [%d/%d], avg time: %s, try: %s, repeat: %s: more_answer: %s, broken: %s, no extra: %s, no negative: %s empty: %s wrong type: %s'%(mode, 
+            query_structure, 
+            num_sampled, gen_num, (time.time()-s0)/(num_sampled+0.001), num_try, num_repeat, num_more_answer, 
             num_broken, num_no_extra_answer, num_no_extra_negative, num_empty, num_wrong_type), end='\r')
         num_try += 1
         empty_query_structure = deepcopy(query_structure)
@@ -293,7 +293,7 @@ def generate_queries(dataset, query_structures, gen_num, max_ans_num, gen_train,
     query_structure = query_structures[idx]
     query_name = query_names[idx] if save_name else str(idx)
     print ('general structure is', query_structure, "with name", query_name, 'with inductive_type', induc_type)
-
+    
     name_to_save = query_name
     set_logger("./data/{}/".format(dataset), name_to_save)
 
@@ -301,11 +301,11 @@ def generate_queries(dataset, query_structures, gen_num, max_ans_num, gen_train,
     train_ans_num = []
     s0 = time.time()
     if gen_train:
-        train_queries, train_answers = ground_queries(dataset, query_structure,
-            train_ent_in, train_ent_out, defaultdict(lambda: defaultdict(set)), defaultdict(lambda: defaultdict(set)),
+        train_queries, train_answers = ground_queries(dataset, query_structure, 
+            train_ent_in, train_ent_out, defaultdict(lambda: defaultdict(set)), defaultdict(lambda: defaultdict(set)), 
             gen_num[0], max_ans_num, query_name, 'train', ent2id, rel2id, 'train', emerge_entity)
     if gen_test:
-        test_queries, test_answers = ground_queries(dataset, query_structure,
+        test_queries, test_answers = ground_queries(dataset, query_structure, 
             test_ent_in, test_ent_out, train_ent_in, train_ent_out, gen_num[2], max_ans_num, query_name, 'test', ent2id, rel2id, induc_type, emerge_entity)
     print ('%s queries generated with structure %s with type %s'%(gen_num, query_structure, induc_type))
 
@@ -401,7 +401,7 @@ def achieve_answer(query, ent_in, ent_out):
                 for ent in ent_set:
                     ent_set_traverse = ent_set_traverse.union(ent_out[ent][query[-1][i]])
                 ent_set = ent_set_traverse
-    else:
+    else:   
         ent_set = achieve_answer(query[0], ent_in, ent_out)
         union_flag = False
         if len(query[-1]) == 1 and query[-1][0] == -1:
@@ -433,8 +433,11 @@ def achieve_answer(query, ent_in, ent_out):
 @click.option('--gen_id', default=0)
 @click.option('--save_name', is_flag=True, default=False)
 @click.option('--index_only', is_flag=True, default=False)
-@click.option('--induc_type', default=None) # choices=['ee', 'es', 'se'], e: emerge, s: seen
+@click.option('--induc_type', default=None)
+
 def main(dataset, seed, gen_train_num, gen_valid_num, gen_test_num, max_ans_num, reindex, gen_train, gen_valid, gen_test, gen_id, save_name, index_only, emerge_ratio, induc_type):
+
+
     train_num_dict = {'FB15k': 200000, "FB15k-237": 100000, "NELL": 65000}
     valid_num_dict = {'FB15k': 8000, "FB15k-237": 5000, "NELL": 4000}
     test_num_dict = {'FB15k': 8000, "FB15k-237": 5000, "NELL": 4000}
@@ -446,7 +449,7 @@ def main(dataset, seed, gen_train_num, gen_valid_num, gen_test_num, max_ans_num,
         elif 'NELL' in dataset:
             gen_train_num = train_num_dict["NELL"]
         else:
-            assert False, "you should set the gen_train_num when using the other dataset"
+            gen_train_num = train_num_dict[dataset]
     if gen_valid and gen_valid_num == 0:
         if 'FB15k-237' in dataset:
             gen_valid_num = 5000
@@ -455,7 +458,7 @@ def main(dataset, seed, gen_train_num, gen_valid_num, gen_test_num, max_ans_num,
         elif 'NELL' in dataset:
             gen_valid_num = 4000
         else:
-            assert False, "you should set the gen_train_num when using the other dataset"
+            gen_valid_num = valid_num_dict[dataset]
     if gen_test and gen_test_num == 0:
         if 'FB15k-237' in dataset:
             gen_test_num = test_num_dict["FB15k-237"]
@@ -464,19 +467,18 @@ def main(dataset, seed, gen_train_num, gen_valid_num, gen_test_num, max_ans_num,
         elif 'NELL' in dataset:
             gen_test_num = test_num_dict["NELL"]
         else:
-            assert False, "you should set the gen_train_num when using the other dataset"
+            gen_test_num = test_num_dict[dataset]
     if index_only:
         index_dataset(dataset, emerge_ratio, reindex)
-        exit()
-    if not os.path.exists(os.path.join('data', dataset, 'query')):
-        os.mkdir(os.path.join('data', dataset, 'query'))
+        exit(-1)
+    
 
     e = 'e'
     r = 'r'
     n = 'n'
     u = 'u'
 
-
+    
     query_structures = [
                         [e, [r]],
                         [e, [r, r]],
@@ -485,13 +487,11 @@ def main(dataset, seed, gen_train_num, gen_valid_num, gen_test_num, max_ans_num,
                         [[e, [r]], [e, [r]], [e, [r]]],
                         [[e, [r, r]], [e, [r]]],
                         [[[e, [r]], [e, [r]]], [r]],
-                        # negation
                         [[e, [r]], [e, [r, n]]],
                         [[e, [r]], [e, [r]], [e, [r, n]]],
                         [[e, [r, r]], [e, [r, n]]],
                         [[e, [r, r, n]], [e, [r]]],
                         [[[e, [r]], [e, [r, n]]], [r]],
-                        # union
                         [[e, [r]], [e, [r]], [u]],
                         [[[e, [r]], [e, [r]], [u]], [r]]
                        ]

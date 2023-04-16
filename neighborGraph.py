@@ -1,10 +1,12 @@
 import os
+import pickle
 from collections import defaultdict
 import random
 
 class neighborGraph:
     def __init__(self, args) -> None:
         path = '%s'%args.data_path
+
 
         with open('%s/stats.txt'%path) as f:
             entrel = f.readlines()
@@ -17,7 +19,7 @@ class neighborGraph:
                 entity = line.strip()
                 emerge_entity.append(entity)
         entity_file.close()
-
+        
         graph_entity = defaultdict(list)
         graph_relation = defaultdict(list)
 

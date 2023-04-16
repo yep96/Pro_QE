@@ -22,7 +22,6 @@ def set_global_seed(seed):
     torch.backends.cudnn.deterministic=True
 
 def eval_tuple(arg_return):
-    """Evaluate a tuple string into a tuple."""
     if type(arg_return) == tuple:
         return arg_return
     if arg_return[0] not in ["(", "["]:

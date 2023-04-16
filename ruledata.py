@@ -33,17 +33,14 @@ class Data():
         indices = [[] for _ in range(self.rels_num)]
         values = [[] for _ in range(self.rels_num)]
 
-
         for h, r, t in self.data['train']:
             indices[r].append((h, t))
             values[r].append(1)
             self.nx[h][t].append(r)
-
         indices = [torch.LongTensor(x).T for x in indices]
         values = [torch.FloatTensor(x) for x in values]
         size = torch.Size([len(self.ents), len(self.ents)])
         self.rel_mat = [torch.sparse.FloatTensor(indices[i], values[i], size).coalesce() for i in range(self.rels_num)]
-
         self.rel_mat.append(torch.sparse.FloatTensor(torch.LongTensor(
             [[i, i] for i in range(len(self.ents))]).T, torch.ones(len(self.ents)), size).coalesce())
 
